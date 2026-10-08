@@ -14,8 +14,10 @@ depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    currency_enum = postgresql.ENUM("RUB", "USD", "EUR", name="currency")
-    status_enum = postgresql.ENUM("pending", "succeeded", "failed", name="payment_status")
+    currency_enum = postgresql.ENUM("RUB", "USD", "EUR", name="currency", create_type=False)
+    status_enum = postgresql.ENUM(
+        "pending", "succeeded", "failed", name="payment_status", create_type=False
+    )
     currency_enum.create(op.get_bind())
     status_enum.create(op.get_bind())
 
