@@ -22,3 +22,10 @@ DLQ_QUEUE = RabbitQueue("payments.dlq", durable=True, routing_key="payments.new"
 
 def create_broker(rabbitmq_url: str) -> RabbitBroker:
     return RabbitBroker(rabbitmq_url)
+
+
+async def declare_retry_topology(broker: RabbitBroker) -> None:
+    for exchange, queue in ((RETRY_EXCHANGE, RETRY_QUEUE), (DLX_EXCHANGE, DLQ_QUEUE)):
+        exchange_obj = await broker.declare_exchange(exchange)
+        queue_obj = await broker.declare_queue(queue)
+        await queue_obj.bind(exchange_obj, routing_key=queue.routing())
