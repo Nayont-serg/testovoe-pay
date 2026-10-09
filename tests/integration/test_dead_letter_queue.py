@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import uuid
 
 import pytest
 from aio_pika import connect_robust
@@ -13,30 +15,40 @@ pytestmark = pytest.mark.integration
 
 async def test_message_for_nonexistent_payment_ends_up_in_dead_letter_queue() -> None:
     settings = integration_settings()
-    broker = create_broker(settings.rabbitmq_url)
-    await broker.start()
-    try:
-        await broker.publish(
-            {"payment_id": "00000000-0000-0000-0000-000000000000"},
-            queue="payments.new",
-            exchange=PAYMENTS_EXCHANGE,
-            routing_key="payments.new",
-        )
-    finally:
-        await broker.stop()
+    nonexistent_payment_id = str(uuid.uuid4())
 
     connection = await connect_robust(settings.rabbitmq_url)
     try:
         channel = await connection.channel()
         dlq = await channel.declare_queue(DLQ_QUEUE.name, durable=True, passive=True)
+        stale_retry_queue = await channel.declare_queue(
+            RETRY_QUEUE.name, durable=True, passive=True
+        )
+        await dlq.purge()
+        await stale_retry_queue.purge()
+
+        broker = create_broker(settings.rabbitmq_url)
+        await broker.start()
+        try:
+            await broker.publish(
+                {"payment_id": nonexistent_payment_id},
+                queue="payments.new",
+                exchange=PAYMENTS_EXCHANGE,
+                routing_key="payments.new",
+            )
+        finally:
+            await broker.stop()
 
         async def poll_for_dlq_message() -> bool:
             for _ in range(60):
                 message = await dlq.get(fail=False)
-                if message is not None:
+                if message is None:
+                    await asyncio.sleep(1)
+                    continue
+                payload = json.loads(message.body.decode())
+                if payload.get("payment_id") == nonexistent_payment_id:
                     await message.ack()
                     return True
-                await asyncio.sleep(1)
             return False
 
         assert await poll_for_dlq_message() is True
