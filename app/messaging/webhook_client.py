@@ -24,7 +24,7 @@ class WebhookClient:
                 response = await self._client.post(webhook_url, json=payload, timeout=10)
                 response.raise_for_status()
                 return
-            except (httpx.HTTPStatusError, httpx.TransportError) as error:
+            except httpx.HTTPError as error:
                 if attempt >= self._settings.webhook_max_attempts:
                     raise WebhookDeliveryError(
                         f"webhook delivery to {webhook_url} failed after {attempt} attempts"

@@ -50,6 +50,22 @@ async def test_send_retries_then_succeeds() -> None:
     assert attempts["count"] == 2
 
 
+async def test_send_wraps_redirect_loop_into_webhook_delivery_error() -> None:
+    attempts = {"count": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        raise httpx.TooManyRedirects("too many redirects", request=request)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = WebhookClient(make_settings(WEBHOOK_MAX_ATTEMPTS=2), http_client)
+        with pytest.raises(WebhookDeliveryError):
+            await client.send("https://example.com/hook", {"payment_id": "abc"})
+
+    assert attempts["count"] == 2
+
+
 async def test_send_raises_after_exhausting_attempts() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(500)

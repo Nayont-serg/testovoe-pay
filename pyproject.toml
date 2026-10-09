@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Async payment processing microservice with outbox pattern and RabbitMQ"
 requires-python = ">=3.12"
 dependencies = [
+    "aio-pika>=9.4",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
@@ -20,7 +21,6 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
-    "aio-pika>=9.4",
     "ruff>=0.6",
 ]
 

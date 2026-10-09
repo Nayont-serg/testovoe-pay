@@ -6,7 +6,7 @@ import httpx
 from faststream import FastStream
 from faststream.rabbit.annotations import RabbitMessage
 
-from app.config import Settings
+from app.config import Settings, configure_logging
 from app.db.session import create_engine, create_session_factory
 from app.messaging.broker import (
     PAYMENTS_EXCHANGE,
@@ -21,6 +21,7 @@ from app.repositories.payment_repository import PaymentRepository
 
 def main() -> None:
     settings = Settings.from_env()
+    configure_logging(settings.log_level)
     engine = create_engine(settings.database_url)
     session_factory = create_session_factory(engine)
     broker = create_broker(settings.rabbitmq_url)

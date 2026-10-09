@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
+from aio_pika.exceptions import AMQPError, ChannelInvalidStateError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.messaging.broker import PAYMENTS_EXCHANGE
 from app.repositories.payment_repository import OutboxRepository
+
+logger = logging.getLogger("payment_processing_service.outbox_relay")
+
+RECOVERABLE_POLL_ERRORS = (SQLAlchemyError, AMQPError, ChannelInvalidStateError, OSError)
 
 
 class _OutboxMessageLike(Protocol):
@@ -55,7 +62,10 @@ class OutboxRelay:
 
     async def _run(self) -> None:
         while not self._stopped.is_set():
-            await self._publish_pending_batch()
+            try:
+                await self._publish_pending_batch()
+            except RECOVERABLE_POLL_ERRORS:
+                logger.exception("outbox relay poll failed, retrying after poll interval")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
                     self._stopped.wait(), timeout=self._settings.outbox_poll_interval_seconds
@@ -70,5 +80,6 @@ class OutboxRelay:
                     message.payload,
                     exchange=PAYMENTS_EXCHANGE,
                     routing_key=message.routing_key,
+                    persist=True,
                 )
                 message.published_at = datetime.now(UTC)

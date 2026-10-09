@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from dataclasses import dataclass
 
 
@@ -18,6 +20,7 @@ class Settings:
     processing_min_seconds: float
     processing_max_seconds: float
     processing_failure_rate: float
+    log_level: str
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -37,4 +40,14 @@ class Settings:
             processing_min_seconds=float(source.get("PROCESSING_MIN_SECONDS", "2")),
             processing_max_seconds=float(source.get("PROCESSING_MAX_SECONDS", "5")),
             processing_failure_rate=float(source.get("PROCESSING_FAILURE_RATE", "0.1")),
+            log_level=source.get("LOG_LEVEL", "INFO").upper(),
         )
+
+
+def configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )

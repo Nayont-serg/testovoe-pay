@@ -24,7 +24,7 @@ _PAYMENTS_ROUTING_KEY = "payments.new"
 class _RepositoryLike(Protocol):
     async def mark_processed(
         self, payment_id: uuid.UUID, status: PaymentStatus, processed_at: datetime
-    ) -> Payment: ...
+    ) -> tuple[Payment, bool]: ...
 
 
 class _WebhookClientLike(Protocol):
@@ -49,6 +49,7 @@ class _BrokerLike(Protocol):
         exchange: object,
         routing_key: str,
         headers: dict[str, object],
+        persist: bool = False,
         expiration: timedelta | None = None,
     ) -> object: ...
 
@@ -67,7 +68,7 @@ def build_webhook_payload(payment: Payment) -> dict[str, object]:
 
 async def simulate_gateway_and_update(
     repository: _RepositoryLike, payment_id: uuid.UUID, settings: Settings
-) -> Payment:
+) -> tuple[Payment, bool]:
     await asyncio.sleep(
         random.uniform(settings.processing_min_seconds, settings.processing_max_seconds)
     )
@@ -91,7 +92,7 @@ async def handle_payment_message(
     retry_count = next_retry_count(headers)
 
     try:
-        payment = await simulate_gateway_and_update(repository, payment_id, settings)
+        payment, transitioned = await simulate_gateway_and_update(repository, payment_id, settings)
     except (PaymentNotFoundError, SQLAlchemyError):
         next_headers = {**headers, _RETRY_COUNT_HEADER: retry_count + 1}
         if retry_count + 1 >= settings.message_max_attempts:
@@ -112,6 +113,14 @@ async def handle_payment_message(
             await retry_publisher.publish_retry(payload, next_headers, delay_ms)
         return
 
+    if not transitioned:
+        logger.info(
+            "payment %s is already in terminal status %s, skipping webhook for redelivered message",
+            payment_id,
+            payment.status.value,
+        )
+        return
+
     try:
         await webhook_client.send(payment.webhook_url, build_webhook_payload(payment))
     except WebhookDeliveryError:
@@ -130,6 +139,7 @@ class BrokerRetryPublisher:
             exchange=RETRY_EXCHANGE,
             routing_key=_PAYMENTS_ROUTING_KEY,
             headers=headers,
+            persist=True,
             expiration=timedelta(milliseconds=delay_ms),
         )
 
@@ -141,4 +151,5 @@ class BrokerRetryPublisher:
             exchange=DLX_EXCHANGE,
             routing_key=_PAYMENTS_ROUTING_KEY,
             headers=headers,
+            persist=True,
         )
