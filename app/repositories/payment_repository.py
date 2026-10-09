@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.outbox import OutboxMessage
@@ -29,22 +30,32 @@ class PaymentRepository:
 
     async def create_with_outbox_event(
         self, payment: Payment, outbox_message: OutboxMessage
-    ) -> None:
-        self._session.add(payment)
-        await self._session.flush()
-        self._session.add(outbox_message)
-        await self._session.commit()
+    ) -> Payment:
+        try:
+            self._session.add(payment)
+            await self._session.flush()
+            self._session.add(outbox_message)
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            winner = await self.get_by_idempotency_key(payment.idempotency_key)
+            if winner is None:
+                raise
+            return winner
+        return payment
 
     async def mark_processed(
         self, payment_id: uuid.UUID, status: PaymentStatus, processed_at: datetime
-    ) -> Payment:
-        payment = await self._session.get(Payment, payment_id)
+    ) -> tuple[Payment, bool]:
+        payment = await self._session.get(Payment, payment_id, with_for_update=True)
         if payment is None:
             raise PaymentNotFoundError(payment_id)
+        if payment.status != PaymentStatus.PENDING:
+            return payment, False
         payment.status = status
         payment.processed_at = processed_at
         await self._session.commit()
-        return payment
+        return payment, True
 
 
 class OutboxRepository:

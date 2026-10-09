@@ -48,16 +48,18 @@ class SucceedingRepository:
 
     async def mark_processed(
         self, _payment_id: uuid.UUID, status: PaymentStatus, processed_at: datetime
-    ) -> Payment:
+    ) -> tuple[Payment, bool]:
+        if self._payment.status != PaymentStatus.PENDING:
+            return self._payment, False
         self._payment.status = status
         self._payment.processed_at = processed_at
-        return self._payment
+        return self._payment, True
 
 
 class RaisingRepository:
     async def mark_processed(
         self, payment_id: uuid.UUID, _status: PaymentStatus, _processed_at: datetime
-    ) -> Payment:
+    ) -> tuple[Payment, bool]:
         raise PaymentNotFoundError(payment_id)
 
 
@@ -184,6 +186,30 @@ async def test_handle_payment_message_dead_letters_after_max_attempts() -> None:
 
     assert len(retry_publisher.dead_letters) == 1
     assert not retry_publisher.retries
+
+
+async def test_handle_payment_message_skips_webhook_when_payment_already_terminal() -> None:
+    payment_id = uuid.uuid4()
+    payment = make_payment(payment_id)
+    payment.status = PaymentStatus.SUCCEEDED
+    payment.processed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    webhook_client = RecordingWebhookClient()
+    retry_publisher = RecordingRetryPublisher()
+
+    await handle_payment_message(
+        payload={"payment_id": str(payment_id)},
+        headers={},
+        repository=SucceedingRepository(payment),
+        webhook_client=webhook_client,
+        retry_publisher=retry_publisher,
+        settings=make_settings(PROCESSING_FAILURE_RATE="1"),
+    )
+
+    assert payment.status == PaymentStatus.SUCCEEDED
+    assert payment.processed_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert not webhook_client.sent
+    assert not retry_publisher.retries
+    assert not retry_publisher.dead_letters
 
 
 async def test_handle_payment_message_logs_and_continues_on_webhook_failure(

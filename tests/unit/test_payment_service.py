@@ -27,20 +27,26 @@ class FakeRepository:
 
     async def create_with_outbox_event(
         self, payment: Payment, outbox_message: OutboxMessage
-    ) -> None:
+    ) -> Payment:
+        winner = self.payments_by_key.get(payment.idempotency_key)
+        if winner is not None:
+            return winner
         self.payments_by_key[payment.idempotency_key] = payment
         self.payments_by_id[payment.id] = payment
         self.created_outbox_messages.append(outbox_message)
+        return payment
 
     async def mark_processed(
         self, payment_id: uuid.UUID, status: PaymentStatus, processed_at: datetime
-    ) -> Payment:
+    ) -> tuple[Payment, bool]:
         payment = self.payments_by_id.get(payment_id)
         if payment is None:
             raise PaymentNotFoundError(payment_id)
+        if payment.status != PaymentStatus.PENDING:
+            return payment, False
         payment.status = status
         payment.processed_at = processed_at
-        return payment
+        return payment, True
 
 
 def make_request() -> PaymentCreateRequest:

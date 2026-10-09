@@ -38,8 +38,7 @@ class PaymentService:
             payload={"payment_id": str(payment_id)},
             created_at=now,
         )
-        await self._repository.create_with_outbox_event(payment, outbox_message)
-        return payment
+        return await self._repository.create_with_outbox_event(payment, outbox_message)
 
     async def get_payment(self, payment_id: uuid.UUID) -> Payment | None:
         return await self._repository.get_by_id(payment_id)
