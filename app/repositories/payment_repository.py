@@ -31,6 +31,7 @@ class PaymentRepository:
         self, payment: Payment, outbox_message: OutboxMessage
     ) -> None:
         self._session.add(payment)
+        await self._session.flush()
         self._session.add(outbox_message)
         await self._session.commit()
 
