@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,13 @@ from app.db.base import Base
 
 class OutboxMessage(Base):
     __tablename__ = "outbox_messages"
+    __table_args__ = (
+        Index(
+            "ix_outbox_messages_unpublished",
+            "created_at",
+            postgresql_where=text("published_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     payment_id: Mapped[uuid.UUID] = mapped_column(
