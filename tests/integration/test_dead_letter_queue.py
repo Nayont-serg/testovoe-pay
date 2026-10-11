@@ -9,6 +9,7 @@ from aio_pika import connect_robust
 
 from app.messaging.broker import DLQ_QUEUE, PAYMENTS_EXCHANGE, RETRY_QUEUE, create_broker
 from tests.integration.conftest import integration_settings
+from tests.integration.environment import assert_test_rabbitmq_vhost
 
 pytestmark = pytest.mark.integration
 
@@ -24,6 +25,7 @@ async def test_message_for_nonexistent_payment_ends_up_in_dead_letter_queue() ->
         stale_retry_queue = await channel.declare_queue(
             RETRY_QUEUE.name, durable=True, passive=True
         )
+        assert_test_rabbitmq_vhost(settings.rabbitmq_url)
         await dlq.purge()
         await stale_retry_queue.purge()
 

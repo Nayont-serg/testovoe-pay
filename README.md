@@ -72,13 +72,34 @@ healthcheck контейнера `api`. Healthcheck контейнера `consum
 ## Тесты
 
     make test              # юнит-тесты, без сети и БД
-    make test-integration  # требует полного стека: `make docker-up`
+    make docker-up-test    # стек с api/consumer, указывающими на тестовые БД/vhost
+    make test-integration  # требует стек, поднятый через docker-up-test
 
 Интеграционные тесты публикуют сообщения в реальный RabbitMQ и ждут, что
 статус платежа станет терминальным и что сообщение дойдёт до `payments.dlq`.
 Обрабатывает их **контейнер `consumer`**, поэтому `make infra-up` для них
-недостаточно — нужен именно `make docker-up` (или локально запущенный
-`make run-consumer`).
+недостаточно — нужен именно `make docker-up-test` (поднимает тот же стек, но
+`api`/`consumer` указывают на `payments_test`/vhost `test`, а не на dev
+ресурсы) либо локально запущенные `make run-consumer`/`make run` с
+`DATABASE_URL`/`RABBITMQ_URL`, переопределёнными на `TEST_DATABASE_URL`/
+`TEST_RABBITMQ_URL`.
+
+### Изоляция тестового окружения (R5)
+
+`tests/integration/environment.py` перед любым `TRUNCATE`/`purge` проверяет,
+что имя базы оканчивается на `_test`, а vhost RabbitMQ равен `test` — иначе
+бросает `UnsafeTestEnvironmentError` до любого деструктивного запроса, не
+наследуя `DATABASE_URL`/`RABBITMQ_URL` обычного окружения как допустимый
+fallback. `TEST_DATABASE_URL`/`TEST_RABBITMQ_URL`/`TEST_RABBITMQ_MANAGEMENT_URL`
+(см. `.env.example`) — единственный способ указать тестам, куда идти; по
+умолчанию это `payments_test` и vhost `test` на том же контейнере
+postgres/rabbitmq, что и у dev-стека. `make docker-up-test` сначала
+создаёт эту базу/vhost (`tests/integration/bootstrap.py`, использует те же
+функции, что и фикстуры), а затем поднимает `api`/`consumer`, указав им на
+эти тестовые ресурсы через `STACK_DATABASE_URL`/`STACK_RABBITMQ_URL` —
+обычный `make docker-up` их не трогает и продолжает поднимать `api`/
+`consumer` на dev `payments`/vhost `/`, который интеграционные тесты теперь
+никогда не затрагивают.
 
 ## Архитектура
 
