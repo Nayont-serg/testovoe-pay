@@ -126,3 +126,22 @@ async def test_create_payment_raises_conflict_when_replay_body_differs() -> None
         await service.create_payment(mismatched_request, idempotency_key="idem-3")
 
     assert len(repository.created_outbox_messages) == 1
+
+
+async def test_create_payment_skips_destination_check_on_exact_match_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository()
+    service = PaymentService(repository, make_settings())
+
+    first = await service.create_payment(make_request(), idempotency_key="idem-4")
+
+    async def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("destination check must not run again for an exact-match replay")
+
+    monkeypatch.setattr("app.services.payment_service.validate_webhook_destination", fail_if_called)
+
+    replayed = await service.create_payment(make_request(), idempotency_key="idem-4")
+
+    assert replayed.id == first.id
+    assert len(repository.created_outbox_messages) == 1

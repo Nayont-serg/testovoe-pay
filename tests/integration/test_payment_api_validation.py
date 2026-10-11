@@ -164,6 +164,24 @@ async def test_private_webhook_destination_is_rejected_and_never_contacted(
     assert receiver.received_paths == []
 
 
+async def test_overlong_dns_label_in_webhook_url_is_rejected_instead_of_crashing(
+    client: tuple[AsyncClient, Settings],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    http_client, settings = client
+    before_payments, before_outbox = await row_counts(session_factory)
+    overlong_label = "a" * 70
+
+    response = await http_client.post(
+        "/api/v1/payments",
+        headers={API_KEY_HEADER: settings.api_key, "Idempotency-Key": str(uuid.uuid4())},
+        json=valid_payload(webhook_url=f"https://{overlong_label}.example.com/hook"),
+    )
+
+    assert response.status_code == 422
+    assert await row_counts(session_factory) == (before_payments, before_outbox)
+
+
 async def test_empty_idempotency_key_is_rejected(
     client: tuple[AsyncClient, Settings],
     session_factory: async_sessionmaker[AsyncSession],

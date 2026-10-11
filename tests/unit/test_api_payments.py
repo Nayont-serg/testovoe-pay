@@ -9,14 +9,22 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_payment_service, verify_api_key
 from app.api.payments import router
+from app.messaging.webhook_destination import (
+    UnsafeWebhookDestinationError,
+    WebhookDestinationUnavailableError,
+)
 from app.models.payment import Payment, PaymentStatus
+from app.services.payment_service import IdempotencyKeyConflictError
 
 
 class FakePaymentService:
-    def __init__(self) -> None:
+    def __init__(self, error_to_raise: Exception | None = None) -> None:
         self.payments: dict[uuid.UUID, Payment] = {}
+        self._error_to_raise = error_to_raise
 
     async def create_payment(self, request: object, idempotency_key: str) -> Payment:
+        if self._error_to_raise is not None:
+            raise self._error_to_raise
         payment = Payment(
             id=uuid.uuid4(),
             amount=request.amount,
@@ -108,6 +116,72 @@ async def test_get_payment_returns_full_detail(client: AsyncClient) -> None:
     body = response.json()
     assert body["amount"] == "20.00"
     assert body["metadata"] == {"order_id": "xyz"}
+
+
+async def test_create_payment_maps_unsafe_destination_to_422() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_payment_service] = lambda: FakePaymentService(
+        error_to_raise=UnsafeWebhookDestinationError("http://10.0.0.1/hook", "10.0.0.1")
+    )
+    app.dependency_overrides[verify_api_key] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/payments",
+            headers={"Idempotency-Key": "idem-422"},
+            json={
+                "amount": "10.00",
+                "currency": "USD",
+                "description": "order",
+                "metadata": {},
+                "webhook_url": "http://10.0.0.1/hook",
+            },
+        )
+    assert response.status_code == 422
+
+
+async def test_create_payment_maps_unavailable_destination_check_to_503() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_payment_service] = lambda: FakePaymentService(
+        error_to_raise=WebhookDestinationUnavailableError("https://example.com/hook", "example.com")
+    )
+    app.dependency_overrides[verify_api_key] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/payments",
+            headers={"Idempotency-Key": "idem-503"},
+            json={
+                "amount": "10.00",
+                "currency": "USD",
+                "description": "order",
+                "metadata": {},
+                "webhook_url": "https://example.com/hook",
+            },
+        )
+    assert response.status_code == 503
+
+
+async def test_create_payment_maps_idempotency_conflict_to_409() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_payment_service] = lambda: FakePaymentService(
+        error_to_raise=IdempotencyKeyConflictError("idem-409")
+    )
+    app.dependency_overrides[verify_api_key] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/payments",
+            headers={"Idempotency-Key": "idem-409"},
+            json={
+                "amount": "10.00",
+                "currency": "USD",
+                "description": "order",
+                "metadata": {},
+                "webhook_url": "https://example.com/hook",
+            },
+        )
+    assert response.status_code == 409
 
 
 async def test_missing_api_key_returns_401() -> None:

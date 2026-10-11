@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from app.api.deps import get_payment_service, verify_api_key
 from app.messaging.webhook_destination import (
     UnsafeWebhookDestinationError,
-    WebhookDestinationUnresolvableError,
+    WebhookDestinationUnavailableError,
 )
 from app.schemas.payment import (
     PaymentCreateRequest,
@@ -33,9 +33,13 @@ async def create_payment(
         payment = await service.create_payment(request, idempotency_key)
     except IdempotencyKeyConflictError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    except (UnsafeWebhookDestinationError, WebhookDestinationUnresolvableError) as error:
+    except UnsafeWebhookDestinationError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+        ) from error
+    except WebhookDestinationUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
         ) from error
     return PaymentCreateResponse(
         payment_id=payment.id, status=payment.status, created_at=payment.created_at

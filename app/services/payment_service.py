@@ -35,14 +35,14 @@ class PaymentService:
         self._settings = settings
 
     async def create_payment(self, request: PaymentCreateRequest, idempotency_key: str) -> Payment:
+        existing = await self._repository.get_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            return self._reconcile_replay(request, existing, idempotency_key)
+
         await validate_webhook_destination(
             str(request.webhook_url),
             allow_private_destinations=self._settings.webhook_allow_private_destinations,
         )
-
-        existing = await self._repository.get_by_idempotency_key(idempotency_key)
-        if existing is not None:
-            return self._reconcile_replay(request, existing, idempotency_key)
 
         now = datetime.now(UTC)
         payment_id = uuid.uuid4()

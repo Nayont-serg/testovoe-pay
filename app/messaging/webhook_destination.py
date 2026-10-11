@@ -5,21 +5,23 @@ import ipaddress
 import socket
 from urllib.parse import urlsplit
 
+_DNS_RESOLUTION_TIMEOUT_SECONDS = 5.0
+
 
 class UnsafeWebhookDestinationError(Exception):
     def __init__(self, webhook_url: str, hostname: str) -> None:
         super().__init__(
-            f"webhook destination {webhook_url!r} resolves to a loopback/private/link-local "
-            f"address for hostname {hostname!r}"
+            f"webhook destination {webhook_url!r} is disallowed for hostname {hostname!r}"
         )
         self.webhook_url = webhook_url
         self.hostname = hostname
 
 
-class WebhookDestinationUnresolvableError(Exception):
+class WebhookDestinationUnavailableError(Exception):
     def __init__(self, webhook_url: str, hostname: str) -> None:
         super().__init__(
-            f"webhook destination {webhook_url!r} hostname {hostname!r} could not be resolved"
+            f"webhook destination {webhook_url!r} hostname {hostname!r} could not be resolved "
+            "right now"
         )
         self.webhook_url = webhook_url
         self.hostname = hostname
@@ -34,9 +36,13 @@ async def _resolve_addresses(
 ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     loop = asyncio.get_running_loop()
     try:
-        address_infos = await loop.getaddrinfo(hostname, None)
-    except socket.gaierror as error:
-        raise WebhookDestinationUnresolvableError(webhook_url, hostname) from error
+        address_infos = await asyncio.wait_for(
+            loop.getaddrinfo(hostname, None), timeout=_DNS_RESOLUTION_TIMEOUT_SECONDS
+        )
+    except UnicodeError as error:
+        raise UnsafeWebhookDestinationError(webhook_url, hostname) from error
+    except (socket.gaierror, TimeoutError) as error:
+        raise WebhookDestinationUnavailableError(webhook_url, hostname) from error
     return [ipaddress.ip_address(address_info[4][0]) for address_info in address_infos]
 
 
