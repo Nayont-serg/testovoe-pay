@@ -8,7 +8,6 @@ from urllib.parse import urlsplit
 
 import asyncpg
 import httpx
-from yarl import URL
 
 TEST_DATABASE_SUFFIX = "_test"
 TEST_RABBITMQ_VHOST = "test"
@@ -29,7 +28,7 @@ def resolve_database_name(database_url: str) -> str:
 
 
 def resolve_rabbitmq_vhost(rabbitmq_url: str) -> str:
-    path = URL(rabbitmq_url).path
+    path = urlsplit(rabbitmq_url).path
     return "/" if path in ("", "/") else path[1:]
 
 
