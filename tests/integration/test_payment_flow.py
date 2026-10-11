@@ -49,7 +49,7 @@ async def test_payment_is_created_published_and_reaches_terminal_status(
     await broker.start()
     try:
         async with session_factory() as session:
-            service = PaymentService(PaymentRepository(session))
+            service = PaymentService(PaymentRepository(session), settings)
             payment = await service.create_payment(
                 PaymentCreateRequest(
                     amount="10.00",
@@ -94,14 +94,15 @@ async def test_losing_idempotency_key_race_returns_the_winning_payment(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     idempotency_key = str(uuid.uuid4())
+    settings = integration_settings()
 
     async with session_factory() as session:
-        winner = await PaymentService(PaymentRepository(session)).create_payment(
+        winner = await PaymentService(PaymentRepository(session), settings).create_payment(
             make_request(), idempotency_key
         )
 
     async with session_factory() as session:
-        loser = await PaymentService(BlindPaymentRepository(session)).create_payment(
+        loser = await PaymentService(BlindPaymentRepository(session), settings).create_payment(
             make_request(), idempotency_key
         )
 
@@ -126,10 +127,11 @@ async def test_concurrent_create_with_same_idempotency_key_yields_one_payment(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     idempotency_key = str(uuid.uuid4())
+    settings = integration_settings()
 
     async def create() -> Payment:
         async with session_factory() as session:
-            return await PaymentService(PaymentRepository(session)).create_payment(
+            return await PaymentService(PaymentRepository(session), settings).create_payment(
                 make_request(), idempotency_key
             )
 

@@ -17,9 +17,11 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
 
 
 async def get_payment_service(
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> PaymentService:
-    return PaymentService(PaymentRepository(session))
+    settings: Settings = request.app.state.settings
+    return PaymentService(PaymentRepository(session), settings)
 
 
 async def verify_api_key(

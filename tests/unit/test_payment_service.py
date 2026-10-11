@@ -6,11 +6,23 @@ from decimal import Decimal
 
 import pytest
 
+from app.config import Settings
 from app.models.outbox import OutboxMessage
 from app.models.payment import Currency, Payment, PaymentStatus
 from app.repositories.payment_repository import PaymentNotFoundError
 from app.schemas.payment import PaymentCreateRequest
-from app.services.payment_service import PaymentService
+from app.services.payment_service import IdempotencyKeyConflictError, PaymentService
+
+
+def make_settings() -> Settings:
+    return Settings.from_env(
+        {
+            "DATABASE_URL": "postgresql+asyncpg://u:p@localhost:5432/db",
+            "RABBITMQ_URL": "amqp://u:p@localhost:5672/",
+            "API_KEY": "secret",
+            "WEBHOOK_ALLOW_PRIVATE_DESTINATIONS": "true",
+        }
+    )
 
 
 class FakeRepository:
@@ -61,7 +73,7 @@ def make_request() -> PaymentCreateRequest:
 
 async def test_create_payment_persists_payment_and_outbox_event() -> None:
     repository = FakeRepository()
-    service = PaymentService(repository)
+    service = PaymentService(repository, make_settings())
 
     payment = await service.create_payment(make_request(), idempotency_key="idem-1")
 
@@ -74,7 +86,7 @@ async def test_create_payment_persists_payment_and_outbox_event() -> None:
 
 async def test_create_payment_is_idempotent_for_same_key() -> None:
     repository = FakeRepository()
-    service = PaymentService(repository)
+    service = PaymentService(repository, make_settings())
 
     first = await service.create_payment(make_request(), idempotency_key="idem-2")
     second = await service.create_payment(make_request(), idempotency_key="idem-2")
@@ -85,7 +97,7 @@ async def test_create_payment_is_idempotent_for_same_key() -> None:
 
 async def test_get_payment_returns_none_when_missing() -> None:
     repository = FakeRepository()
-    service = PaymentService(repository)
+    service = PaymentService(repository, make_settings())
 
     assert await service.get_payment(uuid.uuid4()) is None
 
@@ -94,3 +106,23 @@ async def test_mark_processed_raises_for_unknown_payment() -> None:
     repository = FakeRepository()
     with pytest.raises(PaymentNotFoundError):
         await repository.mark_processed(uuid.uuid4(), PaymentStatus.SUCCEEDED, datetime.now(UTC))
+
+
+async def test_create_payment_raises_conflict_when_replay_body_differs() -> None:
+    repository = FakeRepository()
+    service = PaymentService(repository, make_settings())
+
+    await service.create_payment(make_request(), idempotency_key="idem-3")
+
+    mismatched_request = PaymentCreateRequest(
+        amount=Decimal("999.00"),
+        currency=Currency.USD,
+        description="order #1",
+        metadata={"order_id": "abc"},
+        webhook_url="https://example.com/hook",
+    )
+
+    with pytest.raises(IdempotencyKeyConflictError):
+        await service.create_payment(mismatched_request, idempotency_key="idem-3")
+
+    assert len(repository.created_outbox_messages) == 1

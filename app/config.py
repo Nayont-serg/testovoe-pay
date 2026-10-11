@@ -15,6 +15,7 @@ class Settings:
     outbox_batch_size: int
     webhook_max_attempts: int
     webhook_retry_base_delay_seconds: float
+    webhook_allow_private_destinations: bool
     message_max_attempts: int
     message_retry_base_delay_ms: int
     processing_min_seconds: float
@@ -35,6 +36,12 @@ class Settings:
             webhook_retry_base_delay_seconds=float(
                 source.get("WEBHOOK_RETRY_BASE_DELAY_SECONDS", "1")
             ),
+            webhook_allow_private_destinations=source.get(
+                "WEBHOOK_ALLOW_PRIVATE_DESTINATIONS", "false"
+            )
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
             message_max_attempts=int(source.get("MESSAGE_MAX_ATTEMPTS", "3")),
             message_retry_base_delay_ms=int(source.get("MESSAGE_RETRY_BASE_DELAY_MS", "2000")),
             processing_min_seconds=float(source.get("PROCESSING_MIN_SECONDS", "2")),

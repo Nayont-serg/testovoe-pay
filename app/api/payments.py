@@ -5,12 +5,16 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.api.deps import get_payment_service, verify_api_key
+from app.messaging.webhook_destination import (
+    UnsafeWebhookDestinationError,
+    WebhookDestinationUnresolvableError,
+)
 from app.schemas.payment import (
     PaymentCreateRequest,
     PaymentCreateResponse,
     PaymentDetailResponse,
 )
-from app.services.payment_service import PaymentService
+from app.services.payment_service import IdempotencyKeyConflictError, PaymentService
 
 router = APIRouter(
     prefix="/api/v1/payments",
@@ -22,10 +26,17 @@ router = APIRouter(
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=PaymentCreateResponse)
 async def create_payment(
     request: PaymentCreateRequest,
-    idempotency_key: str = Header(alias="Idempotency-Key"),
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200),
     service: PaymentService = Depends(get_payment_service),
 ) -> PaymentCreateResponse:
-    payment = await service.create_payment(request, idempotency_key)
+    try:
+        payment = await service.create_payment(request, idempotency_key)
+    except IdempotencyKeyConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except (UnsafeWebhookDestinationError, WebhookDestinationUnresolvableError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+        ) from error
     return PaymentCreateResponse(
         payment_id=payment.id, status=payment.status, created_at=payment.created_at
     )
