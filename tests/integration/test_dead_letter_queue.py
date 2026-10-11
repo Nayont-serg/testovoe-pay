@@ -7,7 +7,13 @@ import uuid
 import pytest
 from aio_pika import connect_robust
 
-from app.messaging.broker import DLQ_QUEUE, PAYMENTS_EXCHANGE, RETRY_QUEUE, create_broker
+from app.messaging.broker import (
+    DLQ_QUEUE,
+    PAYMENTS_EXCHANGE,
+    create_broker,
+    retry_tier_queue_name,
+    retry_tiers,
+)
 from tests.integration.conftest import integration_settings
 from tests.integration.environment import assert_test_rabbitmq_vhost
 
@@ -18,16 +24,22 @@ async def test_message_for_nonexistent_payment_ends_up_in_dead_letter_queue() ->
     settings = integration_settings()
     nonexistent_payment_id = str(uuid.uuid4())
 
+    retry_tier_names = [
+        retry_tier_queue_name(tier) for tier in retry_tiers(settings.message_max_attempts)
+    ]
+
     connection = await connect_robust(settings.rabbitmq_url)
     try:
         channel = await connection.channel()
         dlq = await channel.declare_queue(DLQ_QUEUE.name, durable=True, passive=True)
-        stale_retry_queue = await channel.declare_queue(
-            RETRY_QUEUE.name, durable=True, passive=True
-        )
+        stale_retry_queues = [
+            await channel.declare_queue(name, durable=True, passive=True)
+            for name in retry_tier_names
+        ]
         assert_test_rabbitmq_vhost(settings.rabbitmq_url)
         await dlq.purge()
-        await stale_retry_queue.purge()
+        for stale_retry_queue in stale_retry_queues:
+            await stale_retry_queue.purge()
 
         broker = create_broker(settings.rabbitmq_url)
         await broker.start()
@@ -55,7 +67,8 @@ async def test_message_for_nonexistent_payment_ends_up_in_dead_letter_queue() ->
 
         assert await poll_for_dlq_message() is True
 
-        retry_queue = await channel.declare_queue(RETRY_QUEUE.name, durable=True, passive=True)
-        assert retry_queue.declaration_result.message_count == 0
+        for name in retry_tier_names:
+            retry_queue = await channel.declare_queue(name, durable=True, passive=True)
+            assert retry_queue.declaration_result.message_count == 0
     finally:
         await connection.close()

@@ -4,13 +4,14 @@ import asyncio
 import logging
 import random
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Protocol
 
+from aio_pika.exceptions import PublishError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import Settings
-from app.messaging.broker import DLX_EXCHANGE, RETRY_EXCHANGE
+from app.messaging.broker import DLX_EXCHANGE, retry_tier_exchange
 from app.messaging.webhook_client import WebhookDeliveryError
 from app.models.payment import Payment, PaymentStatus
 from app.repositories.payment_repository import PaymentNotFoundError
@@ -33,7 +34,7 @@ class _WebhookClientLike(Protocol):
 
 class RetryPublisher(Protocol):
     async def publish_retry(
-        self, payload: dict[str, object], headers: dict[str, object], delay_ms: int
+        self, payload: dict[str, object], headers: dict[str, object], retry_count: int
     ) -> None: ...
 
     async def publish_dead_letter(
@@ -49,8 +50,8 @@ class _BrokerLike(Protocol):
         exchange: object,
         routing_key: str,
         headers: dict[str, object],
+        mandatory: bool = True,
         persist: bool = False,
-        expiration: timedelta | None = None,
     ) -> object: ...
 
 
@@ -105,12 +106,14 @@ async def handle_payment_message(
         else:
             delay_ms = settings.message_retry_base_delay_ms * (2**retry_count)
             logger.warning(
-                "payment %s processing failed (attempt %d), requeueing with %dms delay",
+                "payment %s processing failed (attempt %d), requeueing to retry tier %d "
+                "with %dms delay",
                 payment_id,
+                retry_count + 1,
                 retry_count + 1,
                 delay_ms,
             )
-            await retry_publisher.publish_retry(payload, next_headers, delay_ms)
+            await retry_publisher.publish_retry(payload, next_headers, retry_count)
         return
 
     if not transitioned:
@@ -132,24 +135,41 @@ class BrokerRetryPublisher:
         self._broker = broker
 
     async def publish_retry(
-        self, payload: dict[str, object], headers: dict[str, object], delay_ms: int
+        self, payload: dict[str, object], headers: dict[str, object], retry_count: int
     ) -> None:
-        await self._broker.publish(
-            payload,
-            exchange=RETRY_EXCHANGE,
-            routing_key=_PAYMENTS_ROUTING_KEY,
-            headers=headers,
-            persist=True,
-            expiration=timedelta(milliseconds=delay_ms),
-        )
+        tier = retry_count + 1
+        try:
+            await self._broker.publish(
+                payload,
+                exchange=retry_tier_exchange(tier),
+                routing_key=_PAYMENTS_ROUTING_KEY,
+                headers=headers,
+                mandatory=True,
+                persist=True,
+            )
+        except PublishError:
+            logger.error(
+                "retry publish for payment %s was not routed to any queue (tier %d)",
+                payload.get("payment_id"),
+                tier,
+            )
+            raise
 
     async def publish_dead_letter(
         self, payload: dict[str, object], headers: dict[str, object]
     ) -> None:
-        await self._broker.publish(
-            payload,
-            exchange=DLX_EXCHANGE,
-            routing_key=_PAYMENTS_ROUTING_KEY,
-            headers=headers,
-            persist=True,
-        )
+        try:
+            await self._broker.publish(
+                payload,
+                exchange=DLX_EXCHANGE,
+                routing_key=_PAYMENTS_ROUTING_KEY,
+                headers=headers,
+                mandatory=True,
+                persist=True,
+            )
+        except PublishError:
+            logger.error(
+                "dead-letter publish for payment %s was not routed to any queue",
+                payload.get("payment_id"),
+            )
+            raise

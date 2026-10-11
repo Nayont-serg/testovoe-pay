@@ -43,7 +43,7 @@ def main() -> None:
             )
 
     async def _declare_retry_topology() -> None:
-        await declare_retry_topology(broker)
+        await declare_retry_topology(broker, settings)
 
     app = FastStream(broker)
     app.after_startup(_declare_retry_topology)

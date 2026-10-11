@@ -25,8 +25,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = session_factory
 
     await broker.start()
-    await declare_payments_topology(broker)
-    relay = OutboxRelay(session_factory, broker, settings)
+    relay = OutboxRelay(
+        session_factory,
+        broker,
+        settings,
+        declare_topology=lambda: declare_payments_topology(broker),
+    )
     await relay.start()
     try:
         yield

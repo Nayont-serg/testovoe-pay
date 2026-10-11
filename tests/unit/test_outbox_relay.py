@@ -4,10 +4,21 @@ import asyncio
 import uuid
 from datetime import datetime
 
+import aiormq
 import pytest
+from aio_pika.exceptions import PublishError
+from aiormq.abc import DeliveredMessage
 from sqlalchemy.exc import OperationalError
 
 from app.messaging.outbox_relay import OutboxRelay
+
+
+def make_publish_error(routing_key: str) -> PublishError:
+    delivery = aiormq.spec.Basic.Return(
+        reply_code=312, reply_text="NO_ROUTE", routing_key=routing_key
+    )
+    message = DeliveredMessage(delivery=delivery, header=None, body=b"", channel=None)
+    return PublishError(message, delivery)
 
 
 class FakeOutboxMessage:
@@ -54,11 +65,22 @@ class FakeSession:
 
 
 class FakeBroker:
-    def __init__(self) -> None:
+    def __init__(self, unroutable_payment_ids: frozenset[str] = frozenset()) -> None:
         self.published: list[dict[str, object]] = []
+        self._unroutable_payment_ids = unroutable_payment_ids
 
     async def publish(self, payload: dict[str, object], **kwargs: object) -> None:
+        if payload.get("payment_id") in self._unroutable_payment_ids:
+            raise make_publish_error(str(kwargs.get("routing_key")))
         self.published.append({"payload": payload, **kwargs})
+
+
+class FakeTopologyDeclarer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> None:
+        self.calls += 1
 
 
 class FakeSettings:
@@ -76,6 +98,7 @@ async def test_publish_pending_batch_publishes_and_marks_published() -> None:
         session_factory=lambda: session,
         broker=broker,
         settings=FakeSettings(),
+        declare_topology=FakeTopologyDeclarer(),
         outbox_repository_factory=lambda _session: repository,
     )
     await relay._publish_pending_batch()
@@ -83,6 +106,7 @@ async def test_publish_pending_batch_publishes_and_marks_published() -> None:
     assert len(broker.published) == 1
     assert broker.published[0]["payload"] == {"payment_id": "abc"}
     assert broker.published[0]["persist"] is True
+    assert broker.published[0]["mandatory"] is True
     assert message.published_at is not None
 
 
@@ -98,6 +122,7 @@ async def test_run_logs_and_keeps_polling_after_a_failed_poll(
         session_factory=lambda: session,
         broker=broker,
         settings=FakeSettings(),
+        declare_topology=FakeTopologyDeclarer(),
         outbox_repository_factory=lambda _session: repository,
     )
     with caplog.at_level("ERROR"):
@@ -112,3 +137,48 @@ async def test_run_logs_and_keeps_polling_after_a_failed_poll(
     assert message.published_at is not None
     assert len(broker.published) == 1
     assert "outbox relay poll failed" in caplog.text
+
+
+async def test_start_declares_topology_before_polling() -> None:
+    repository = FakeOutboxRepository([])
+    session = FakeSession(repository)
+    declare_topology = FakeTopologyDeclarer()
+
+    relay = OutboxRelay(
+        session_factory=lambda: session,
+        broker=FakeBroker(),
+        settings=FakeSettings(),
+        declare_topology=declare_topology,
+        outbox_repository_factory=lambda _session: repository,
+    )
+    await relay.start()
+    await relay.stop()
+
+    assert declare_topology.calls >= 1
+
+
+async def test_unroutable_message_stays_unpublished_and_batch_continues(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unroutable = FakeOutboxMessage({"payment_id": "unroutable"}, "payments.new")
+    routable = FakeOutboxMessage({"payment_id": "routable"}, "payments.new")
+    repository = FakeOutboxRepository([unroutable, routable])
+    session = FakeSession(repository)
+    broker = FakeBroker(unroutable_payment_ids=frozenset({"unroutable"}))
+    declare_topology = FakeTopologyDeclarer()
+
+    relay = OutboxRelay(
+        session_factory=lambda: session,
+        broker=broker,
+        settings=FakeSettings(),
+        declare_topology=declare_topology,
+        outbox_repository_factory=lambda _session: repository,
+    )
+    with caplog.at_level("ERROR"):
+        await relay._publish_pending_batch()
+
+    assert unroutable.published_at is None
+    assert routable.published_at is not None
+    assert [p["payload"] for p in broker.published] == [{"payment_id": "routable"}]
+    assert declare_topology.calls == 1
+    assert "was not routed to any queue" in caplog.text

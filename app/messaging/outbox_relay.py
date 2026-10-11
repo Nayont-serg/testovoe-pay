@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
-from aio_pika.exceptions import AMQPError, ChannelInvalidStateError
+from aio_pika.exceptions import AMQPError, ChannelInvalidStateError, PublishError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -41,6 +41,7 @@ class OutboxRelay:
         session_factory: async_sessionmaker[AsyncSession] | Callable[[], AsyncSession],
         broker: _BrokerLike,
         settings: Settings,
+        declare_topology: Callable[[], Awaitable[None]],
         outbox_repository_factory: Callable[[AsyncSession], _OutboxRepositoryLike] = (
             OutboxRepository
         ),
@@ -48,11 +49,13 @@ class OutboxRelay:
         self._session_factory = session_factory
         self._broker = broker
         self._settings = settings
+        self._declare_topology = declare_topology
         self._outbox_repository_factory = outbox_repository_factory
         self._task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
 
     async def start(self) -> None:
+        await self._declare_topology()
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -76,10 +79,21 @@ class OutboxRelay:
             repository = self._outbox_repository_factory(session)
             messages = await repository.fetch_unpublished(self._settings.outbox_batch_size)
             for message in messages:
-                await self._broker.publish(
-                    message.payload,
-                    exchange=PAYMENTS_EXCHANGE,
-                    routing_key=message.routing_key,
-                    persist=True,
-                )
+                try:
+                    await self._broker.publish(
+                        message.payload,
+                        exchange=PAYMENTS_EXCHANGE,
+                        routing_key=message.routing_key,
+                        mandatory=True,
+                        persist=True,
+                    )
+                except PublishError:
+                    logger.error(
+                        "outbox message %s for routing key %s was not routed to any queue, "
+                        "re-declaring payments topology and leaving it unpublished",
+                        message.id,
+                        message.routing_key,
+                    )
+                    await self._declare_topology()
+                    continue
                 message.published_at = datetime.now(UTC)
