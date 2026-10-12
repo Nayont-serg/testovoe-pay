@@ -170,3 +170,17 @@ RabbitMQ уже существует очередь `payments.new` без эти
 осталась от более ранней версии сервиса в томе `rabbitmqdata`), объявление
 упадёт с `PRECONDITION_FAILED`. Лечится удалением очереди через management UI
 либо чистым стартом: `make docker-reset && make docker-up`.
+
+То же самое касается retry-очередей `payments.retry.1`/`payments.retry.2`:
+TTL (`x-message-ttl`) теперь объявлен на уровне очереди и берётся из
+`MESSAGE_RETRY_BASE_DELAY_MS`/`MESSAGE_MAX_ATTEMPTS` в момент старта
+consumer'а. Если изменить `MESSAGE_RETRY_BASE_DELAY_MS` (или число tier'ов
+через `MESSAGE_MAX_ATTEMPTS`) для уже существующего тома RabbitMQ, где эти
+очереди объявлены со старым TTL, `declare_retry_topology` упадёт с тем же
+`PRECONDITION_FAILED` при старте consumer'а — лечится так же, как и выше
+(`make docker-reset && make docker-up`), либо вручную удалить
+`payments.retry.1`/`payments.retry.2` через management UI перед перезапуском.
+Если в томе остались очередь/exchange от версии сервиса до этого фикса
+(`payments.retry`, `payments.retry.exchange` — общая очередь с per-message
+TTL вместо отдельных очередей на tier) — они больше не используются кодом и
+осиротели; их можно безопасно удалить вручную через management UI.

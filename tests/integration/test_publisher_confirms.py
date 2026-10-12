@@ -25,9 +25,23 @@ from app.repositories.payment_repository import PaymentRepository
 from app.schemas.payment import PaymentCreateRequest
 from app.services.payment_service import PaymentService
 from tests.integration.conftest import integration_settings
-from tests.integration.environment import assert_test_rabbitmq_vhost
+from tests.integration.environment import PROJECT_ROOT, assert_test_rabbitmq_vhost
 
 pytestmark = pytest.mark.integration
+
+
+async def _run_compose(*args: str) -> None:
+    process = await asyncio.create_subprocess_exec(
+        "docker",
+        "compose",
+        *args,
+        cwd=PROJECT_ROOT,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(f"docker compose {' '.join(args)} failed: {stderr.decode()}")
 
 
 async def _fetch_outbox_message(session: AsyncSession, payment_id: uuid.UUID) -> OutboxMessage:
@@ -55,64 +69,66 @@ async def test_relay_leaves_message_unpublished_and_self_heals_after_binding_is_
     settings = integration_settings()
     assert_test_rabbitmq_vhost(settings.rabbitmq_url)
 
-    connection = await connect_robust(settings.rabbitmq_url)
+    await _run_compose("stop", "api")
     try:
-        channel = await connection.channel()
-        exchange = await channel.declare_exchange(
-            PAYMENTS_EXCHANGE.name, durable=True, passive=True
-        )
-        queue = await channel.declare_queue(PAYMENTS_QUEUE.name, durable=True, passive=True)
-        await queue.unbind(exchange, routing_key="payments.new")
-
-        broker = create_broker(settings.rabbitmq_url)
-        await broker.start()
+        connection = await connect_robust(settings.rabbitmq_url)
         try:
-            async with session_factory() as session:
-                service = PaymentService(PaymentRepository(session), settings)
-                payment = await service.create_payment(
-                    PaymentCreateRequest(
-                        amount="10.00",
-                        currency=Currency.USD,
-                        description="r1 binding loss repro",
-                        metadata={},
-                        webhook_url="https://example.com/hook",
-                    ),
-                    idempotency_key=str(uuid.uuid4()),
+            channel = await connection.channel()
+            exchange = await channel.declare_exchange(
+                PAYMENTS_EXCHANGE.name, durable=True, passive=True
+            )
+            queue = await channel.declare_queue(PAYMENTS_QUEUE.name, durable=True, passive=True)
+            await queue.unbind(exchange, routing_key="payments.new")
+
+            broker = create_broker(settings.rabbitmq_url)
+            await broker.start()
+            try:
+                async with session_factory() as session:
+                    service = PaymentService(PaymentRepository(session), settings)
+                    payment = await service.create_payment(
+                        PaymentCreateRequest(
+                            amount="10.00",
+                            currency=Currency.USD,
+                            description="r1 binding loss repro",
+                            metadata={},
+                            webhook_url="https://example.com/hook",
+                        ),
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+
+                relay = OutboxRelay(
+                    session_factory,
+                    broker,
+                    settings,
+                    declare_topology=lambda: declare_payments_topology(broker),
                 )
 
-            relay = OutboxRelay(
-                session_factory,
-                broker,
-                settings,
-                declare_topology=lambda: declare_payments_topology(broker),
-            )
+                await relay._publish_pending_batch()
 
-            await relay._publish_pending_batch()
+                async with session_factory() as session:
+                    outbox_message = await _fetch_outbox_message(session, payment.id)
+                    assert outbox_message.published_at is None
 
-            async with session_factory() as session:
-                outbox_message = await _fetch_outbox_message(session, payment.id)
-                assert outbox_message.published_at is None
+                queue_state = await channel.declare_queue(
+                    PAYMENTS_QUEUE.name, durable=True, passive=True
+                )
+                assert queue_state.declaration_result.message_count == 0
 
-            queue_state = await channel.declare_queue(
-                PAYMENTS_QUEUE.name, durable=True, passive=True
-            )
-            assert queue_state.declaration_result.message_count == 0
+                await relay._publish_pending_batch()
 
-            await queue.bind(exchange, routing_key="payments.new")
-
-            await relay._publish_pending_batch()
-
-            async with session_factory() as session:
-                outbox_message = await _fetch_outbox_message(session, payment.id)
-                assert outbox_message.published_at is not None
-
-            final_payment = await _poll_for_terminal_status(session_factory, payment.id)
-            assert final_payment.status in (PaymentStatus.SUCCEEDED, PaymentStatus.FAILED)
+                async with session_factory() as session:
+                    outbox_message = await _fetch_outbox_message(session, payment.id)
+                    assert outbox_message.published_at is not None
+            finally:
+                await broker.stop()
         finally:
-            await broker.stop()
+            await queue.bind(exchange, routing_key="payments.new")
+            await connection.close()
     finally:
-        await queue.bind(exchange, routing_key="payments.new")
-        await connection.close()
+        await _run_compose("start", "api")
+
+    final_payment = await _poll_for_terminal_status(session_factory, payment.id)
+    assert final_payment.status in (PaymentStatus.SUCCEEDED, PaymentStatus.FAILED)
 
 
 async def test_consumer_dead_letters_original_message_when_retry_tier_queue_is_gone() -> None:
