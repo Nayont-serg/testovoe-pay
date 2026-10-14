@@ -18,6 +18,7 @@ class Settings:
     webhook_allow_private_destinations: bool
     message_max_attempts: int
     message_retry_base_delay_ms: int
+    consumer_heartbeat_interval_seconds: float
     processing_min_seconds: float
     processing_max_seconds: float
     processing_failure_rate: float
@@ -44,6 +45,9 @@ class Settings:
             in ("1", "true", "yes"),
             message_max_attempts=int(source.get("MESSAGE_MAX_ATTEMPTS", "3")),
             message_retry_base_delay_ms=int(source.get("MESSAGE_RETRY_BASE_DELAY_MS", "2000")),
+            consumer_heartbeat_interval_seconds=float(
+                source.get("CONSUMER_HEARTBEAT_INTERVAL_SECONDS", "2.0")
+            ),
             processing_min_seconds=float(source.get("PROCESSING_MIN_SECONDS", "2")),
             processing_max_seconds=float(source.get("PROCESSING_MAX_SECONDS", "5")),
             processing_failure_rate=float(source.get("PROCESSING_FAILURE_RATE", "0.1")),

@@ -7,6 +7,7 @@ from faststream import FastStream
 from faststream.rabbit.annotations import RabbitMessage
 
 from app.config import Settings, configure_logging
+from app.consumer_heartbeat import HeartbeatWriter
 from app.db.session import create_engine, create_session_factory
 from app.messaging.broker import (
     PAYMENTS_EXCHANGE,
@@ -28,6 +29,7 @@ def main() -> None:
     retry_publisher = BrokerRetryPublisher(broker)
     http_client = httpx.AsyncClient()
     webhook_client = WebhookClient(settings, http_client)
+    heartbeat_writer = HeartbeatWriter(settings.consumer_heartbeat_interval_seconds)
 
     @broker.subscriber(PAYMENTS_QUEUE, PAYMENTS_EXCHANGE)
     async def on_payment_new(payload: dict[str, object], message: RabbitMessage) -> None:
@@ -47,6 +49,8 @@ def main() -> None:
 
     app = FastStream(broker)
     app.after_startup(_declare_retry_topology)
+    app.after_startup(heartbeat_writer.start)
+    app.after_shutdown(heartbeat_writer.stop)
     app.after_shutdown(http_client.aclose)
     app.after_shutdown(engine.dispose)
 
